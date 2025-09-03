@@ -1,3 +1,4 @@
+
 import sqlite3
 import os
 from pathlib import Path
@@ -22,7 +23,7 @@ class USFMToBBLXConverter:
     
     def create_widgets(self):
         # Version Label
-        tk.Label(self.root, text="Version: 1.1 (Fixed run_conversion and grid)", fg="blue").grid(row=0, column=0, columnspan=3, padx=5, pady=5)
+        tk.Label(self.root, text="Version: 1.13 (Fixed chapter heading inclusion)", fg="blue").grid(row=0, column=0, columnspan=3, padx=5, pady=5)
         
         # Input Directory
         tk.Label(self.root, text="Input Directory (USFM Files):").grid(row=1, column=0, padx=5, pady=5, sticky="w")
@@ -136,22 +137,29 @@ class USFMToBBLXConverter:
         errors = []
         
         # Define metadata markers to ignore
-        metadata_markers = {'\\id', '\\ide', '\\usfm', '\\h', '\\toc1', '\\toc2', '\\toc3', '\\mt1', '\\mt2'}
+        metadata_markers = {'\\id', '\\ide', '\\usfm', '\\h', '\\toc1', '\\toc2', '\\toc3', '\\mt1', '\\mt2', '\\s', '\\s1', '\\s2', '\\s3'}
+        # Define formatting markers to include in verse text
+        formatting_markers = {'\\p', '\\q1', '\\q2'}
         
         for line_num, line in enumerate(content, 1):
             line = line.strip()
             if not line:
                 continue
             
-            # Skip metadata markers
+            # Handle metadata markers
             if any(line.startswith(marker) for marker in metadata_markers):
                 if line.startswith('\\id '):
                     book_id = line.split()[1]
                 continue
             
+            # Handle chapter marker
             if line.startswith('\\c '):
                 if current_text and current_verse > 0:
-                    verses.append((book_id, current_chapter, current_verse, ' '.join(current_text)))
+                    text = ' '.join(current_text).strip()
+                    # Clean formatting markers from text
+                    text = re.sub(r' \\(p|q1|q2) ', ' ', text)
+                    text = ' '.join(text.split())  # Normalize spaces
+                    verses.append((book_id, current_chapter, current_verse, text))
                     current_text = []
                 chapter_str = line.split()[1]
                 if re.match(r'^\d+$', chapter_str):
@@ -160,26 +168,52 @@ class USFMToBBLXConverter:
                 else:
                     errors.append(f"Invalid chapter number '{chapter_str}' at line {line_num} in {file_path}")
                     continue
+            
+            # Handle verse marker
             elif line.startswith('\\v '):
                 if current_text and current_verse > 0:
-                    verses.append((book_id, current_chapter, current_verse, ' '.join(current_text)))
+                    text = ' '.join(current_text).strip()
+                    # Clean formatting markers from text
+                    text = re.sub(r' \\(p|q1|q2) ', ' ', text)
+                    text = ' '.join(text.split())  # Normalize spaces
+                    verses.append((book_id, current_chapter, current_verse, text))
                     current_text = []
                 parts = line.split(' ', 2)
                 verse_str = parts[1] if len(parts) > 1 else ''
                 if re.match(r'^\d+$', verse_str):
                     current_verse = int(verse_str)
-                    current_text.append(parts[2] if len(parts) > 2 else '')
+                    text_part = parts[2] if len(parts) > 2 else ''
+                    if text_part:
+                        current_text.append(text_part)
                 else:
                     errors.append(f"Invalid verse number '{verse_str}' at line {line_num} in {file_path}")
                     continue
-            elif line.startswith(('\\p', '\\s1')):
+            
+            # Handle formatting markers
+            elif any(line.startswith(marker) for marker in formatting_markers):
                 if current_text:
                     current_text.append(' ')
+                # Get the text after the marker
+                marker = next(m for m in formatting_markers if line.startswith(m))
+                marker_length = len(marker)
+                text_part = line[marker_length:].strip()
+                if text_part:
+                    current_text.append(text_part)
+            
+            # Handle regular text
             else:
-                current_text.append(line)
+                if current_verse > 0:
+                    current_text.append(line)
+                else:
+                    errors.append(f"Text outside of verse at line {line_num}: {line}")
         
+        # Save final verse
         if current_text and current_verse > 0:
-            verses.append((book_id, current_chapter, current_verse, ' '.join(current_text)))
+            text = ' '.join(current_text).strip()
+            # Clean formatting markers from text
+            text = re.sub(r' \\(p|q1|q2) ', ' ', text)
+            text = ' '.join(text.split())  # Normalize spaces
+            verses.append((book_id, current_chapter, current_verse, text))
         
         return verses, errors
     
@@ -215,10 +249,12 @@ class USFMToBBLXConverter:
                     continue
                 
                 for _, chapter, verse, text in verses:
+                    # Add one space before text for two spaces in e-Sword display
+                    formatted_text = f" {text}"
                     cursor.execute("""
                         INSERT OR REPLACE INTO Bible (Book, Chapter, Verse, Scripture)
                         VALUES (?, ?, ?, ?)
-                    """, (book_number, chapter, verse, text))
+                    """, (book_number, chapter, verse, formatted_text))
             
             conn.commit()
             conn.close()
